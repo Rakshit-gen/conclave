@@ -1,0 +1,192 @@
+// gRPC binding for conclave's A2A implementation.
+//
+// This is conclave's own copy, not a checkout of the official
+// specification/a2a.proto — message/field names and numbers mirror the
+// real spec (see ../../../docs/a2a-spec-notes.md), but the google.api.http
+// / google.api.field_behavior annotations the official proto carries for
+// HTTP-transcoding are stripped, since conclave's REST binding is already
+// hand-written in FastAPI rather than generated from those annotations.
+// Stripping them also means this compiles with plain grpcio-tools, no
+// googleapis common-protos checkout required.
+//
+// AgentCard here is deliberately minimal (just enough for
+// GetExtendedAgentCard) — full Agent Card fidelity (skills, capabilities,
+// security schemes) lives in conclave/a2a/models.py and is served over
+// REST's well-known URI regardless of which transport handles task
+// operations; that's a real, documented scope line, not an oversight.
+syntax = "proto3";
+package conclave.a2a.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_USER = 1;
+  ROLE_AGENT = 2;
+}
+
+enum TaskState {
+  TASK_STATE_UNSPECIFIED = 0;
+  TASK_STATE_SUBMITTED = 1;
+  TASK_STATE_WORKING = 2;
+  TASK_STATE_COMPLETED = 3;
+  TASK_STATE_FAILED = 4;
+  TASK_STATE_CANCELED = 5;
+  TASK_STATE_INPUT_REQUIRED = 6;
+  TASK_STATE_REJECTED = 7;
+  TASK_STATE_AUTH_REQUIRED = 8;
+}
+
+message Part {
+  oneof content {
+    string text = 1;
+    bytes raw = 2;
+    string url = 3;
+    google.protobuf.Value data = 4;
+  }
+  google.protobuf.Struct metadata = 5;
+  string filename = 6;
+  string media_type = 7;
+}
+
+message Message {
+  string message_id = 1;
+  string context_id = 2;
+  string task_id = 3;
+  Role role = 4;
+  repeated Part parts = 5;
+  google.protobuf.Struct metadata = 6;
+  repeated string extensions = 7;
+  repeated string reference_task_ids = 8;
+}
+
+message Artifact {
+  string artifact_id = 1;
+  string name = 2;
+  string description = 3;
+  repeated Part parts = 4;
+  google.protobuf.Struct metadata = 5;
+}
+
+message TaskStatus {
+  TaskState state = 1;
+  Message message = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}
+
+message Task {
+  string id = 1;
+  string context_id = 2;
+  TaskStatus status = 3;
+  repeated Artifact artifacts = 4;
+  repeated Message history = 5;
+  google.protobuf.Struct metadata = 6;
+}
+
+message TaskStatusUpdateEvent {
+  string task_id = 1;
+  string context_id = 2;
+  TaskStatus status = 3;
+}
+
+message TaskArtifactUpdateEvent {
+  string task_id = 1;
+  string context_id = 2;
+  Artifact artifact = 3;
+  bool append = 4;
+  bool last_chunk = 5;
+}
+
+message StreamResponse {
+  oneof payload {
+    Task task = 1;
+    TaskStatusUpdateEvent status_update = 2;
+    TaskArtifactUpdateEvent artifact_update = 3;
+  }
+}
+
+message AuthenticationInfo {
+  string scheme = 1;
+  string credentials = 2;
+}
+
+message TaskPushNotificationConfig {
+  string id = 1;
+  string task_id = 2;
+  string url = 3;
+  string token = 4;
+  AuthenticationInfo authentication = 5;
+}
+
+message SendMessageConfiguration {
+  repeated string accepted_output_modes = 1;
+  TaskPushNotificationConfig task_push_notification_config = 2;
+  int32 history_length = 3;
+  bool return_immediately = 4;
+}
+
+message SendMessageRequest {
+  Message message = 1;
+  SendMessageConfiguration configuration = 2;
+}
+
+message GetTaskRequest {
+  string id = 1;
+}
+
+message ListTasksRequest {}
+
+message ListTasksResponse {
+  repeated Task tasks = 1;
+}
+
+message CancelTaskRequest {
+  string id = 1;
+}
+
+message SubscribeToTaskRequest {
+  string id = 1;
+}
+
+message GetTaskPushNotificationConfigRequest {
+  string task_id = 1;
+  string id = 2;
+}
+
+message ListTaskPushNotificationConfigsRequest {
+  string task_id = 1;
+}
+
+message ListTaskPushNotificationConfigsResponse {
+  repeated TaskPushNotificationConfig configs = 1;
+}
+
+message DeleteTaskPushNotificationConfigRequest {
+  string task_id = 1;
+  string id = 2;
+}
+
+message GetExtendedAgentCardRequest {}
+
+message AgentCardSummary {
+  string name = 1;
+  string description = 2;
+  string version = 3;
+  string documentation_url = 4;
+}
+
+service A2AService {
+  rpc SendMessage(SendMessageRequest) returns (Task);
+  rpc SendStreamingMessage(SendMessageRequest) returns (stream StreamResponse);
+  rpc GetTask(GetTaskRequest) returns (Task);
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
+  rpc CancelTask(CancelTaskRequest) returns (Task);
+  rpc SubscribeToTask(SubscribeToTaskRequest) returns (stream StreamResponse);
+  rpc CreateTaskPushNotificationConfig(TaskPushNotificationConfig) returns (TaskPushNotificationConfig);
+  rpc GetTaskPushNotificationConfig(GetTaskPushNotificationConfigRequest) returns (TaskPushNotificationConfig);
+  rpc ListTaskPushNotificationConfigs(ListTaskPushNotificationConfigsRequest) returns (ListTaskPushNotificationConfigsResponse);
+  rpc DeleteTaskPushNotificationConfig(DeleteTaskPushNotificationConfigRequest) returns (google.protobuf.Empty);
+  rpc GetExtendedAgentCard(GetExtendedAgentCardRequest) returns (AgentCardSummary);
+}
