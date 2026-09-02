@@ -103,7 +103,8 @@ not what the code claims is in it.
 ```
 conclave/
   core/           event-sourced replay engine, SQLite-backed event store
-  a2a/            protocol wire models, HTTP+JSON REST server + client
+  a2a/            protocol wire models + all three transport bindings
+    proto/          conclave's own gRPC contract + generated stubs
   orchestrator/   durable delegate(), capability-based agent registry
   cli.py          workflow/agent inspection commands
 examples/pipeline/  the three-agent crash-recoverable demo
@@ -123,14 +124,20 @@ CI runs both on every push (`.github/workflows/ci.yml`).
 
 ## Status
 
-Phase 1 complete: durable core, A2A REST binding, orchestrator, CLI, and
-the crash-recoverable demo, all covered by tests that exercise real
-subprocesses and a real SQLite file — not mocks standing in for them.
+Durable core, orchestrator, CLI, and the crash-recoverable demo, all
+covered by tests that exercise real subprocesses and a real SQLite file —
+not mocks standing in for them. All three A2A transport bindings from the
+spec are implemented and interchangeable — REST, JSON-RPC 2.0, and gRPC —
+sharing one `TaskRunner` per agent, so a task started on one binding is
+visible on any of the others. Push notifications (webhook delivery on every
+task transition) and `tasks/{id}:subscribe` are real, not modeled-but-
+unreachable. Security schemes (API key, HTTP auth, OAuth2, OIDC, mTLS) are
+modeled field-for-field from the spec; enforcement covers API key and
+Bearer — OAuth2/OIDC/mTLS validation needs a real identity provider, which
+is an integration point for whoever deploys the agent, not something this
+library tries to be (see `docs/a2a-spec-notes.md`).
 
-Not yet built, and not silently pretended to be: the JSON-RPC and gRPC A2A
-bindings (REST is spec-complete on its own), push notifications, and the
-OAuth2/OIDC/mTLS security-scheme flows (see the "Scoped out for now"
-section of `docs/a2a-spec-notes.md`).
+The gRPC binding needs the `grpc` extra: `pip install -e ".[grpc]"`.
 
 ## License
 

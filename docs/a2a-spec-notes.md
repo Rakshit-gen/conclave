@@ -13,9 +13,9 @@ Pydantic models declare the snake_case name with a camelCase alias, so both
 ## Transport
 
 The spec defines three interchangeable bindings (JSON-RPC, gRPC, HTTP+JSON
-REST) with identical semantics. conclave implements the **HTTP+JSON REST**
-binding — it's the one that maps onto FastAPI/httpx without a protobuf
-toolchain, and the spec treats it as a first-class binding, not a fallback.
+REST) with identical semantics, and conclave implements all three — see
+"JSON-RPC binding" and "gRPC binding" below for the other two. The REST
+route table:
 
 | Operation | REST route |
 |---|---|
@@ -84,8 +84,43 @@ Error codes use JSON-RPC 2.0's spec-reserved "server error" range
 (-32000 to -32099) for app-level failures (auth, not-found, already-
 terminal) and the standard codes for framing failures.
 
-## Scoped out for now
+## gRPC binding
 
-The gRPC transport binding — it needs a protobuf toolchain (`protoc`,
-generated stubs) this library doesn't otherwise depend on, unlike REST
-and JSON-RPC which only needed HTTP + JSON either way.
+`conclave/a2a/proto/a2a.proto` is conclave's own stripped copy of the
+spec's gRPC contract, not a checkout of the official one — it mirrors the
+same message/field names and numbers but drops the `google.api.http` /
+`google.api.field_behavior` HTTP-transcoding annotations, which need the
+googleapis common-protos repo that plain `grpcio-tools` doesn't bundle.
+Those annotations exist so the official binding can *generate* a REST
+surface from the gRPC one; conclave's REST binding is hand-written
+separately, so it doesn't need them. `GetExtendedAgentCard` returns a
+deliberately minimal `AgentCardSummary` over gRPC — full Agent Card
+fidelity (skills, capabilities, security schemes) is only ever served over
+REST's well-known URI, regardless of which transport handles tasks.
+
+`conclave/a2a/grpc_server.py`'s `add_to_server(agent_server, server)`
+mounts a servicer on an `agent_server`'s *existing* `TaskRunner`, push
+store, and `Authenticator` — the same state its REST/JSON-RPC routes use,
+not a separate copy. Translating between conclave's Pydantic wire models
+and the generated protobuf classes doesn't need hand-written per-field
+mapping code: `WireModel` already dumps camelCase field names, `TASK_STATE_*`
+enum strings, and RFC3339 timestamps, because that's protobuf's own JSON
+mapping convention — so `conclave/a2a/proto/convert.py` just round-trips
+through `google.protobuf.json_format.ParseDict`/`MessageToDict`, with
+`always_print_fields_with_no_presence=True` on the way back (otherwise a
+proto3 scalar left at its zero value, like an empty `context_id`, is
+dropped from the JSON entirely — and some `WireModel` fields, like
+`TaskStatusUpdateEvent.context_id`, are required rather than optional).
+
+`grpc.aio.ServicerContext.abort()` is itself a coroutine, unlike the sync
+grpc API's `context.abort()` — every call site awaits it, since an
+un-awaited `abort()` just constructs a coroutine object and returns
+normally instead of terminating the RPC (caught by
+`test_grpc_auth_is_enforced` failing with "DID NOT RAISE" on the first
+pass, not by inspection).
+
+`grpcio`/`protobuf` are an optional `grpc` extra
+(`pip install -e ".[grpc]"`), not a core dependency — `conclave/a2a/__init__.py`
+only exposes `GrpcAgentClient`/`add_to_server`/`build_server` if the import
+succeeds, so importing `conclave.a2a` at all doesn't require a protobuf
+toolchain unless the gRPC binding is actually used.
