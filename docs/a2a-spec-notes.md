@@ -46,10 +46,30 @@ that was an earlier (pre-v1.0) shape. `Part` is a single message with a
 `filename` and `media_type`. conclave's `Part` model mirrors the oneof as
 mutually-exclusive optional fields with a validator.
 
+## Security schemes
+
+`SecurityScheme`'s full `oneof` (API key, HTTP auth, OAuth2 + all five
+flow shapes, OpenID Connect, mTLS) is modeled field-for-field in
+`models.py`. Enforcement (`conclave/a2a/auth.py`) only covers
+`api_key_security_scheme` (header-located) and `http_auth_security_scheme`
+(Bearer) — those are self-contained checks. OAuth2 and OIDC are modeled
+but not enforced: validating a real token means talking to a real identity
+provider, which is an integration point for whoever deploys the agent,
+not something this library should try to *be*.
+
+## Push notifications and `tasks/{id}:subscribe`
+
+Both are real, not modeled-but-unreachable. That required moving task
+execution off the request that creates it and onto a background
+`asyncio.Task` (`TaskRunner._spawn`), fanning its events out to however
+many subscribers (SSE connections, push-notification webhooks) are
+attached at the time — otherwise `return_immediately=True` would have
+nothing async to return immediately *from*, and `/tasks/{id}:subscribe`
+would have no still-running task to attach to.
+
 ## Scoped out for now
 
-`SecurityScheme`'s OAuth2/OpenID/mTLS sub-messages are modeled only down to
-the discriminator — conclave's demo agents run as unauthenticated local
-processes, so the flow-specific fields (`AuthorizationCodeOAuthFlow`, etc.)
-aren't exercised. Add them when an example actually needs an authenticated
-agent.
+The JSON-RPC and gRPC transport bindings (REST is spec-complete on its
+own — all three carry identical semantics per the spec, not a fallback
+tier). gRPC additionally needs a protobuf toolchain this library doesn't
+otherwise depend on.

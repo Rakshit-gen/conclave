@@ -183,6 +183,17 @@ class AgentCapabilities(WireModel):
     extended_agent_card: bool = False
 
 
+class StringList(WireModel):
+    # Named `values` in Python (a field literally named `list` shadows the
+    # builtin in its own annotation) but still `list` on the wire, matching
+    # the proto's `repeated string list = 1`.
+    values: list[str] = Field(default_factory=list, alias="list")
+
+
+class SecurityRequirement(WireModel):
+    schemes: dict[str, StringList] = Field(default_factory=dict)
+
+
 class AgentSkill(WireModel):
     id: str
     name: str
@@ -191,6 +202,7 @@ class AgentSkill(WireModel):
     examples: list[str] = Field(default_factory=list)
     input_modes: list[str] = Field(default_factory=list)
     output_modes: list[str] = Field(default_factory=list)
+    security_requirements: list[SecurityRequirement] = Field(default_factory=list)
 
 
 class AgentInterface(WireModel):
@@ -200,11 +212,96 @@ class AgentInterface(WireModel):
     protocol_version: str = "1.0"
 
 
-class SecurityScheme(WireModel):
-    """Discriminator only — see docs/a2a-spec-notes.md for what's scoped out."""
-
-    type: str
+class APIKeySecurityScheme(WireModel):
     description: str | None = None
+    location: str  # "query" | "header" | "cookie"
+    name: str
+
+
+class HTTPAuthSecurityScheme(WireModel):
+    description: str | None = None
+    scheme: str  # IANA HTTP auth scheme name, e.g. "Bearer", "Basic"
+    bearer_format: str | None = None
+
+
+class AuthorizationCodeOAuthFlow(WireModel):
+    authorization_url: str
+    token_url: str
+    refresh_url: str | None = None
+    scopes: dict[str, str] = Field(default_factory=dict)
+    pkce_required: bool = False
+
+
+class ClientCredentialsOAuthFlow(WireModel):
+    token_url: str
+    refresh_url: str | None = None
+    scopes: dict[str, str] = Field(default_factory=dict)
+
+
+class ImplicitOAuthFlow(WireModel):
+    """Deprecated by the spec itself (use authorization_code + PKCE) — modeled for completeness."""
+
+    authorization_url: str | None = None
+    refresh_url: str | None = None
+    scopes: dict[str, str] = Field(default_factory=dict)
+
+
+class PasswordOAuthFlow(WireModel):
+    """Deprecated by the spec itself (use authorization_code + PKCE, or device_code)."""
+
+    token_url: str | None = None
+    refresh_url: str | None = None
+    scopes: dict[str, str] = Field(default_factory=dict)
+
+
+class DeviceCodeOAuthFlow(WireModel):
+    device_authorization_url: str
+    token_url: str
+    refresh_url: str | None = None
+    scopes: dict[str, str] = Field(default_factory=dict)
+
+
+class OAuthFlows(WireModel):
+    """`oneof flow` — exactly one of these should be set, mirroring `Part`."""
+
+    authorization_code: AuthorizationCodeOAuthFlow | None = None
+    client_credentials: ClientCredentialsOAuthFlow | None = None
+    implicit: ImplicitOAuthFlow | None = None
+    password: PasswordOAuthFlow | None = None
+    device_code: DeviceCodeOAuthFlow | None = None
+
+
+class OAuth2SecurityScheme(WireModel):
+    description: str | None = None
+    flows: OAuthFlows
+    oauth2_metadata_url: str | None = None
+
+
+class OpenIdConnectSecurityScheme(WireModel):
+    description: str | None = None
+    open_id_connect_url: str
+
+
+class MutualTlsSecurityScheme(WireModel):
+    description: str | None = None
+
+
+class SecurityScheme(WireModel):
+    """`oneof scheme` (spec §4.5) — exactly one of these five is set.
+
+    Enforcement only exists for `api_key_security_scheme` and
+    `http_auth_security_scheme` (see `conclave/a2a/auth.py`) — the OAuth2/
+    OIDC/mTLS shapes are modeled field-for-field but validating a real
+    token means talking to a real identity provider, which is an
+    integration point for whoever deploys the agent, not something a
+    protocol library should try to *be*.
+    """
+
+    api_key_security_scheme: APIKeySecurityScheme | None = None
+    http_auth_security_scheme: HTTPAuthSecurityScheme | None = None
+    oauth2_security_scheme: OAuth2SecurityScheme | None = None
+    open_id_connect_security_scheme: OpenIdConnectSecurityScheme | None = None
+    mtls_security_scheme: MutualTlsSecurityScheme | None = None
 
 
 class AgentCard(WireModel):
@@ -216,6 +313,7 @@ class AgentCard(WireModel):
     documentation_url: str | None = None
     capabilities: AgentCapabilities = Field(default_factory=AgentCapabilities)
     security_schemes: dict[str, SecurityScheme] = Field(default_factory=dict)
+    security_requirements: list[SecurityRequirement] = Field(default_factory=list)
     default_input_modes: list[str] = Field(default_factory=lambda: ["text/plain"])
     default_output_modes: list[str] = Field(default_factory=lambda: ["text/plain"])
     skills: list[AgentSkill] = Field(default_factory=list)

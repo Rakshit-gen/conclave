@@ -31,10 +31,10 @@ async def failing_handler(message: Message) -> list[Part]:
     raise ValueError("deliberately broken")
 
 
-def client_for(server: AgentServer) -> AgentClient:
+def client_for(server: AgentServer, auth_headers: dict[str, str] | None = None) -> AgentClient:
     transport = httpx.ASGITransport(app=server.app)
     http_client = httpx.AsyncClient(transport=transport, base_url="http://testserver")
-    return AgentClient("http://testserver", http_client=http_client)
+    return AgentClient("http://testserver", http_client=http_client, auth_headers=auth_headers)
 
 
 async def test_agent_card_is_served_at_the_well_known_path():
