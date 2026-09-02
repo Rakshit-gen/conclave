@@ -11,7 +11,7 @@ from conclave.a2a.models import (
 from conclave.core import InMemoryEventStore, Runtime, step
 from conclave.orchestrator import AgentRegistry, delegate
 
-from .conftest import run_agent_server
+from ..conftest import run_agent_server
 
 
 async def test_delegate_runs_inside_a_durable_workflow(make_echo_card):
