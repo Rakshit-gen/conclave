@@ -17,6 +17,14 @@ from .runner import AgentHandler, TaskRunner
 from .server import AgentServer
 from .tasks import InMemoryTaskStore, TaskStore
 
+try:
+    from .grpc_client import GrpcAgentClient
+    from .grpc_server import add_to_server, build_server
+except ImportError:  # grpcio is an optional extra ([grpc]), not a core dependency
+    GrpcAgentClient = None  # type: ignore[assignment]
+    add_to_server = None  # type: ignore[assignment]
+    build_server = None  # type: ignore[assignment]
+
 __all__ = [
     "AgentClient",
     "JsonRpcAgentClient",
@@ -37,4 +45,7 @@ __all__ = [
     "BearerAuthenticator",
     "api_key_headers",
     "bearer_headers",
+    "GrpcAgentClient",
+    "add_to_server",
+    "build_server",
 ]
