@@ -8,5 +8,8 @@ dist/
 .ruff_cache/
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
+examples/pipeline/.run/
 .env
 .DS_Store
