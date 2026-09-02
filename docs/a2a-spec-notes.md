@@ -67,9 +67,25 @@ attached at the time — otherwise `return_immediately=True` would have
 nothing async to return immediately *from*, and `/tasks/{id}:subscribe`
 would have no still-running task to attach to.
 
+## JSON-RPC binding
+
+`conclave/a2a/jsonrpc.py` implements all eleven `A2AService` RPCs (spec §9)
+as a single `POST /jsonrpc` endpoint on the *same* `AgentServer`/FastAPI
+app as the REST binding — same `TaskRunner`, same `TaskStore`, same
+`Authenticator`, same push-notification store. A task created over REST is
+visible over JSON-RPC on the same server and vice versa, because there's
+only ever one runner underneath both; the binding is just which envelope
+a request arrives in. Streaming methods (`SendStreamingMessage`,
+`SubscribeToTask`) reuse the REST binding's SSE transport, framing one
+full JSON-RPC response object per `StreamResponse` instead of the bare
+`StreamResponse` REST sends.
+
+Error codes use JSON-RPC 2.0's spec-reserved "server error" range
+(-32000 to -32099) for app-level failures (auth, not-found, already-
+terminal) and the standard codes for framing failures.
+
 ## Scoped out for now
 
-The JSON-RPC and gRPC transport bindings (REST is spec-complete on its
-own — all three carry identical semantics per the spec, not a fallback
-tier). gRPC additionally needs a protobuf toolchain this library doesn't
-otherwise depend on.
+The gRPC transport binding — it needs a protobuf toolchain (`protoc`,
+generated stubs) this library doesn't otherwise depend on, unlike REST
+and JSON-RPC which only needed HTTP + JSON either way.

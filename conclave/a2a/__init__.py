@@ -6,6 +6,7 @@ from .auth import (
     NoAuth,
 )
 from .client import AgentClient, api_key_headers, bearer_headers
+from .jsonrpc_client import JsonRpcAgentClient, JsonRpcError
 from .push import (
     HttpPushNotifier,
     InMemoryPushNotificationStore,
@@ -18,6 +19,8 @@ from .tasks import InMemoryTaskStore, TaskStore
 
 __all__ = [
     "AgentClient",
+    "JsonRpcAgentClient",
+    "JsonRpcError",
     "AgentServer",
     "AgentHandler",
     "TaskRunner",

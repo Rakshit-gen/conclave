@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
 from .auth import AuthenticationError, Authenticator, NoAuth
+from .jsonrpc import JsonRpcDispatcher, is_streaming_method
 from .models import AgentCard, SendMessageRequest, StreamResponse, TaskPushNotificationConfig
 from .push import (
     HttpPushNotifier,
@@ -47,6 +48,9 @@ class AgentServer:
             notifier or HttpPushNotifier(),
         )
         self.authenticator = authenticator or NoAuth()
+        self.jsonrpc = JsonRpcDispatcher(
+            self.card, self.runner, self.push_configs, self.authenticator
+        )
         self.app = FastAPI(title=card.name)
         self._mount_routes()
 
@@ -66,6 +70,16 @@ class AgentServer:
         @app.get("/.well-known/agent-card.json")
         async def get_agent_card() -> dict:
             return self.card.model_dump(by_alias=True, exclude_none=True)
+
+        @app.post("/jsonrpc")
+        async def jsonrpc_endpoint(http_request: Request):
+            envelope = await http_request.json()
+            headers = {k.lower(): v for k, v in http_request.headers.items()}
+            method = envelope.get("method")
+            if is_streaming_method(method):
+                frames = self.jsonrpc.dispatch_stream(envelope, headers)
+                return EventSourceResponse(_as_jsonrpc_sse(frames))
+            return await self.jsonrpc.dispatch(envelope, headers)
 
         @app.post("/message:send")
         async def send_message(request: SendMessageRequest, http_request: Request) -> dict:
@@ -155,6 +169,11 @@ class AgentServer:
 async def _as_sse(responses):
     async for response in responses:
         yield _frame(response)
+
+
+async def _as_jsonrpc_sse(envelopes):
+    async for envelope in envelopes:
+        yield {"data": json.dumps(envelope)}
 
 
 async def _prepend(first, rest):
