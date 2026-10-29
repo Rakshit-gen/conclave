@@ -1,118 +1,125 @@
 # conclave
 
-A durable multi-agent orchestrator, built from scratch — no LangGraph, no
-Temporal SDK, no A2A SDK underneath. Two things live here:
+A multi-agent orchestrator that survives crashes. You write a workflow as a plain async Python function that hands work to other agents and can pause for a human's approval. Kill the process halfway, start a new one on the same event log, and it carries on from where it stopped without asking any agent to redo work it already did.
 
-1. **A durable execution core** (`conclave/core`) — event-sourced workflow
-   state, deterministic replay, crash recovery, and resumable
-   human-in-the-loop approval gates. Kill the process mid-workflow and a
-   fresh one, pointed at the same event log, picks up exactly where it left
-   off — because nothing here ever trusted memory in the first place.
-2. **An A2A (Agent2Agent) protocol implementation** (`conclave/a2a`) —
-   Agent Card discovery, the real task lifecycle, and the HTTP+JSON REST
-   wire binding from [the official spec](https://github.com/a2aproject/A2A),
-   not a mocked-up stand-in for it. See `docs/a2a-spec-notes.md` for the
-   exact field-by-field mapping.
+Everything is built from scratch: no LangGraph, no Temporal SDK, no A2A SDK underneath. The repo has two parts:
 
-`conclave/orchestrator` sits on top of both: a workflow can durably delegate
-a task to a remote agent it's never talked to before, suspend for a human's
-approval across a crash and restart, and keep going — without ever
-re-sending a message an agent already acted on.
+1. **A durable execution core** (`conclave/core`). Event-sourced workflow state, deterministic replay, crash recovery and approval gates that survive restarts.
+2. **An A2A (Agent2Agent) protocol implementation** (`conclave/a2a`). Agent Card discovery, the task lifecycle, and all three wire bindings from [the spec](https://github.com/a2aproject/A2A): REST, JSON-RPC 2.0 and gRPC. `docs/a2a-spec-notes.md` maps it field by field.
 
-## How the durable core actually works
+`conclave/orchestrator` joins them: a workflow can hand a task to a remote agent it has never talked to, wait for approval across a crash and a restart, and keep going.
 
-There's no sandboxed workflow language runtime here. Instead: a workflow is
-a plain async function, and the **entire function is re-run from the top on
-every drive**. Every side-effecting call goes through `step()` or
-`wait_for_signal()`, which check a cursor into the recorded event log before
-doing anything real:
+## Quickstart
 
-- Already-recorded steps return their stored result instantly — the real
-  side effect (an agent call, an LLM call, whatever) never happens twice.
-- The first call with nothing recorded yet is the live edge of history — it
-  actually runs, and its outcome is durably persisted before the function
-  is allowed to continue.
-
-This means workflow code has to be deterministic (same inputs → same
-sequence of `step()` calls), exactly like Temporal's own constraint, and for
-the same reason. `get_version()` is the documented escape hatch for
-changing a workflow's step sequence across a deploy without breaking runs
-already in flight.
-
-The module docstrings in `conclave/core/execution.py` and
-`conclave/core/runtime.py` go deeper on the replay model — written as
-design rationale while building it, not after-the-fact commentary.
-
-## The demo: a three-agent pipeline that survives a real kill -9
-
-`examples/pipeline/` runs Researcher → Writer → **human approval gate** →
-Reviewer, with each agent a genuinely separate OS process serving A2A over
-a real localhost port — not three functions in one process pretending to
-be agents.
+Python 3.11+.
 
 ```bash
+git clone https://github.com/Rakshit-gen/conclave.git
+cd conclave
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-
-python -m examples.pipeline.run start "distributed consensus"
-python -m examples.pipeline.run status    # -> suspended, waiting on approve_draft
-python -m examples.pipeline.run approve   # -> completed, prints the final draft
-python -m examples.pipeline.run stop      # stop the three agent processes
 ```
 
-To see crash recovery for real, not just take it on faith:
+### Run the demo
+
+`examples/pipeline/` runs Researcher, then Writer, then a **human approval gate**, then Reviewer. Each agent is its own OS process serving A2A on a localhost port.
+
+```bash
+python -m examples.pipeline.run start "distributed consensus"
+python -m examples.pipeline.run status    # suspended, waiting on approve_draft
+python -m examples.pipeline.run approve   # completed, prints the final draft
+python -m examples.pipeline.run stop      # stops the three agent processes
+```
+
+### Watch it recover from a crash
 
 ```bash
 python -m examples.pipeline.run start "distributed consensus" --crash-after write
-# exits via os._exit(137) right after "write" durably completes —
-# a real simulated kill -9 mid-workflow. echo $? -> 137
+# exits with os._exit(137) right after "write" is saved, the same exit code as kill -9
+echo $?    # 137
 
 python -m examples.pipeline.run resume
-# -> suspended, waiting on approve_draft. Replayed "research" and "write"
-#    from the event log instead of re-delegating to those agents, then
-#    genuinely reached the suspension point the crashed run never got to.
+# suspended, waiting on approve_draft.
+# "research" and "write" came from the event log; neither agent was called again.
 
 python -m examples.pipeline.run approve
-# -> completed. research and write still never ran twice.
+# completed
 ```
 
-`tests/examples/test_pipeline_demo.py` runs this exact sequence as a real
-subprocess-driven integration test, so it can't silently rot.
+`tests/examples/test_pipeline_demo.py` runs this exact sequence as a subprocess test, so the demo cannot quietly break.
 
-Each demo agent's "intelligence" is a plain deterministic string transform,
-not a model call — the demo exists to prove the orchestration layer, and a
-canned LLM call would add cost and flakiness without making any of that
-more convincing. Swap the handler in `examples/pipeline/agents.py` for a
-real model call and nothing else in the package needs to change.
+The demo agents transform strings instead of calling a model. The demo is there to prove the orchestration layer, and a real LLM would only add cost and flaky tests. Swap the handler in `examples/pipeline/agents.py` for a model call and nothing else changes.
 
-## Inspecting a workflow
+## Writing a workflow
+
+```python
+from conclave.core import Runtime, SQLiteEventStore, step, wait_for_signal
+
+async def fetch_report(topic: str) -> dict:
+    ...  # any side effect: an HTTP call, an LLM call, an A2A delegation
+
+async def my_workflow(input_: dict) -> dict:
+    report = await step(fetch_report, input_["topic"], name="fetch")
+    await wait_for_signal("approve")
+    return {"report": report}
+
+runtime = Runtime(SQLiteEventStore("conclave.db"))
+runtime.register("my_workflow", my_workflow)
+
+result = await runtime.start("my_workflow", "run-1", {"topic": "raft"})
+# result.status == "suspended", result.waiting_on == "approve"
+result = await runtime.signal("run-1", "approve")
+# result.status == "completed"
+```
+
+To hand work to another agent, use `conclave.orchestrator.delegate(agent_url, message)`. It is a `step()` around an A2A `send_message`, so it is recorded and never re-sent on replay. `AgentRegistry` fetches Agent Cards and finds agents by skill tag.
+
+## How replay works
+
+There is no sandboxed workflow language. A workflow is a normal async function, and **the whole function runs again from the top every time it is driven**. Every side effect goes through `step()` or `wait_for_signal()`, which first look at a cursor into the event log:
+
+- If the step is already recorded, its stored result comes back straight away. The real call never happens twice.
+- The first step with nothing recorded is the live edge. It runs for real, and its result is written to the log before the function may continue.
+
+So workflow code must be deterministic: the same inputs must produce the same sequence of `step()` calls. Temporal has the same rule for the same reason. A mismatch raises `NonDeterminismError`. `get_version()` is the way to change a workflow's steps across a deploy without breaking runs already in flight.
+
+The docstrings in `conclave/core/execution.py` and `conclave/core/runtime.py` go deeper. They were written as design notes while building it.
+
+## Inspecting workflows
 
 ```bash
-conclave status <workflow-id> --db examples/pipeline/.run/conclave.db
-conclave history <workflow-id> --db examples/pipeline/.run/conclave.db
 conclave list --db examples/pipeline/.run/conclave.db
+conclave status  <workflow-id> --db examples/pipeline/.run/conclave.db
+conclave history <workflow-id> --db examples/pipeline/.run/conclave.db
 conclave agent-card http://127.0.0.1:9001
 ```
 
-`history` prints every event actually recorded for a workflow — this is how
-the execution engine gets reviewed as it's built: what's really in the log,
-not what the code claims is in it.
+`history` prints every event actually recorded for a workflow. It is the easiest way to check what the engine did, rather than what the code says it should do.
+
+## A2A coverage
+
+- REST, JSON-RPC 2.0 and gRPC bindings, all sharing one `TaskRunner` per agent. A task started on one binding is visible on the others.
+- Push notifications: webhook delivery on every task state change.
+- `tasks/{id}:subscribe` streaming.
+- Security schemes (API key, HTTP auth, OAuth2, OIDC, mTLS) are modeled field for field. Enforcement covers API key and Bearer. OAuth2, OIDC and mTLS validation need a real identity provider, which is left to whoever deploys the agent.
+
+gRPC needs the extra: `pip install -e ".[grpc]"`.
 
 ## Layout
 
 ```
 conclave/
-  core/           event-sourced replay engine, SQLite-backed event store
-  a2a/            protocol wire models + all three transport bindings
-    proto/          conclave's own gRPC contract + generated stubs
-  orchestrator/   durable delegate(), capability-based agent registry
-  cli.py          workflow/agent inspection commands
-examples/pipeline/  the three-agent crash-recoverable demo
-docs/               spec notes and design rationale
-tests/              unit + real-subprocess integration tests
+  core/            replay engine and SQLite event store
+  a2a/             protocol models and the three transport bindings
+    proto/         gRPC contract and generated stubs
+  orchestrator/    durable delegate() and capability-based agent registry
+  cli.py           inspection commands
+examples/pipeline/ the three-agent crash recovery demo
+docs/              spec notes and design rationale
+tests/             unit tests and subprocess integration tests
 ```
 
-## Running the tests
+## Tests
 
 ```bash
 pip install -e ".[dev]"
@@ -120,24 +127,7 @@ ruff check .
 pytest -q
 ```
 
-CI runs both on every push (`.github/workflows/ci.yml`).
-
-## Status
-
-Durable core, orchestrator, CLI, and the crash-recoverable demo, all
-covered by tests that exercise real subprocesses and a real SQLite file —
-not mocks standing in for them. All three A2A transport bindings from the
-spec are implemented and interchangeable — REST, JSON-RPC 2.0, and gRPC —
-sharing one `TaskRunner` per agent, so a task started on one binding is
-visible on any of the others. Push notifications (webhook delivery on every
-task transition) and `tasks/{id}:subscribe` are real, not modeled-but-
-unreachable. Security schemes (API key, HTTP auth, OAuth2, OIDC, mTLS) are
-modeled field-for-field from the spec; enforcement covers API key and
-Bearer — OAuth2/OIDC/mTLS validation needs a real identity provider, which
-is an integration point for whoever deploys the agent, not something this
-library tries to be (see `docs/a2a-spec-notes.md`).
-
-The gRPC binding needs the `grpc` extra: `pip install -e ".[grpc]"`.
+CI runs both on every push. The crash recovery and pipeline tests use real subprocesses and a real SQLite file, not mocks.
 
 ## License
 
